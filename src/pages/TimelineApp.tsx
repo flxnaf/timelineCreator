@@ -3,6 +3,8 @@ import { motion } from 'framer-motion';
 import Toolbar from '../components/Toolbar';
 import LayersPanel from '../components/LayersPanel';
 import EventModal from '../components/EventModal';
+import TimelineAxis from '../components/TimelineAxis';
+import TimelineControls from '../components/TimelineControls';
 import { 
   TimelineDocument, 
   TimelineLayer, 
@@ -80,6 +82,7 @@ const TimelineApp: React.FC = () => {
   const [isLayersPanelOpen, setIsLayersPanelOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [timeIncrement, setTimeIncrement] = useState<'year' | 'month' | 'day'>('year');
 
   // Handlers
   const handleLogin = useCallback(() => {
@@ -204,8 +207,20 @@ const TimelineApp: React.FC = () => {
   // Timeline canvas handlers
   const handleCanvasWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
-    const delta = e.deltaY > 0 ? 0.9 : 1.1;
-    setZoom(prev => Math.max(0.1, Math.min(5, prev * delta)));
+    
+    // Handle different types of wheel events (mouse wheel vs trackpad)
+    let delta = 1;
+    if (e.deltaY !== 0) {
+      // For mouse wheel or trackpad vertical scroll
+      delta = e.deltaY > 0 ? 0.9 : 1.1;
+    } else if (e.deltaX !== 0) {
+      // For trackpad horizontal scroll (pinch gesture)
+      delta = e.deltaX > 0 ? 0.9 : 1.1;
+    }
+    
+    // Apply zoom with more granular control for trackpad
+    const zoomFactor = Math.abs(e.deltaY) > 100 ? delta : (delta > 1 ? 1.05 : 0.95);
+    setZoom(prev => Math.max(0.1, Math.min(10, prev * zoomFactor)));
   }, []);
 
   const handleCanvasMouseDown = useCallback((e: React.MouseEvent) => {
@@ -217,9 +232,18 @@ const TimelineApp: React.FC = () => {
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       hasMoved = true;
+      const newPanX = moveEvent.clientX - startX;
+      const newPanY = moveEvent.clientY - startY;
+      
+      // Apply boundaries to prevent dragging too far from timeline
+      const maxPanX = 200;
+      const minPanX = -1000;
+      const maxPanY = 100;
+      const minPanY = -100;
+      
       setPan({
-        x: moveEvent.clientX - startX,
-        y: moveEvent.clientY - startY
+        x: Math.max(minPanX, Math.min(maxPanX, newPanX)),
+        y: Math.max(minPanY, Math.min(maxPanY, newPanY))
       });
     };
 
@@ -227,11 +251,18 @@ const TimelineApp: React.FC = () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
       
-      // If mouse didn't move much, treat as a click to create event
+      // Only create event if clicking on timeline area and didn't drag much
       if (!hasMoved) {
         const canvasX = (upEvent.clientX - rect.left - pan.x) / zoom;
         const canvasY = (upEvent.clientY - rect.top - pan.y) / zoom;
-        handleCreateEvent(canvasX, canvasY);
+        
+        // Check if click is within timeline bounds (near the axis)
+        const timelineY = rect.height / 2; // Assuming timeline is in middle
+        const distanceFromTimeline = Math.abs(canvasY - timelineY);
+        
+        if (distanceFromTimeline < 150) { // Within 150px of timeline
+          handleCreateEvent(canvasX, canvasY, upEvent.clientX - rect.left);
+        }
       }
     };
 
@@ -239,13 +270,19 @@ const TimelineApp: React.FC = () => {
     document.addEventListener('mouseup', handleMouseUp);
   }, [pan, zoom]);
 
-  const handleCreateEvent = useCallback((x: number, y: number) => {
+  const handleCreateEvent = useCallback((x: number, y: number, screenX?: number) => {
     if (!currentDocument) return;
+
+    // Calculate the date based on position on timeline
+    const timelineWidth = 1200; // Base timeline width
+    const totalDuration = currentDocument.timeRange.end.getTime() - currentDocument.timeRange.start.getTime();
+    const progress = Math.max(0, Math.min(1, screenX ? (screenX / timelineWidth) : (x / timelineWidth)));
+    const eventDate = new Date(currentDocument.timeRange.start.getTime() + (progress * totalDuration));
 
     const newEvent: TimelineEvent = {
       id: `event-${Date.now()}`,
       title: 'New Event',
-      date: new Date(),
+      date: eventDate,
       description: 'Click to edit description...',
       x: x,
       y: y,
@@ -308,6 +345,20 @@ const TimelineApp: React.FC = () => {
     });
     setIsEditingEvent(false);
     setSelectedEvent(null);
+  }, []);
+
+  // Timeline control handlers
+  const handleZoomChange = useCallback((newZoom: number) => {
+    setZoom(newZoom);
+  }, []);
+
+  const handleIncrementChange = useCallback((newIncrement: 'year' | 'month' | 'day') => {
+    setTimeIncrement(newIncrement);
+  }, []);
+
+  const handleResetView = useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
   }, []);
 
   if (!currentDocument) {
@@ -395,21 +446,24 @@ const TimelineApp: React.FC = () => {
             ))}
           </div>
 
-          {/* Timeline Axis */}
-          <div className="timeline-axis">
-            <div className="axis-line" />
-            {/* Time markers will be generated here */}
-          </div>
+          {/* Timeline Axis with proper dates */}
+          <TimelineAxis
+            startDate={currentDocument.timeRange.start}
+            endDate={currentDocument.timeRange.end}
+            zoom={zoom}
+            increment={timeIncrement}
+            width={1200}
+          />
         </motion.div>
 
         {/* Timeline Controls */}
-        <div className="timeline-controls">
-          <div className="zoom-controls">
-            <button onClick={() => setZoom(prev => Math.max(0.1, prev * 0.9))}>-</button>
-            <span>{Math.round(zoom * 100)}%</span>
-            <button onClick={() => setZoom(prev => Math.min(5, prev * 1.1))}>+</button>
-          </div>
-        </div>
+        <TimelineControls
+          zoom={zoom}
+          increment={timeIncrement}
+          onZoomChange={handleZoomChange}
+          onIncrementChange={handleIncrementChange}
+          onResetView={handleResetView}
+        />
       </main>
 
       <LayersPanel
